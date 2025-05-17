@@ -6,6 +6,7 @@ from typing import Callable
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from mamba2 import Mamba2
 
+
 class GMABlock(nn.Module):
     """
     Grouped Multi-Scale Attention Block (GMABlock)  for feature enhancement.
@@ -116,13 +117,12 @@ class GSSDBlock(nn.Module):
     ):
         super().__init__()
         self.ln_1 = norm_layer(hidden_dim)
-        self.mamba2 = Mamba2(d_model=hidden_dim)
+        self.mamba2 = Mamba2(d_model=hidden_dim, d_state=64, headdim=8)
         self.drop_path = DropPath(drop_path)
         self.skip_scale = nn.Parameter(torch.ones(hidden_dim))
         self.conv_blk = GMAModule(hidden_dim)
         self.ln_2 = nn.LayerNorm(hidden_dim)
         self.skip_scale2 = nn.Parameter(torch.ones(hidden_dim))
-
 
     def forward(self, input):
         B, L, C = input.shape
@@ -137,7 +137,8 @@ class GSSDBlock(nn.Module):
 
         # Apply skip connection
         x = reshaped_input * self.skip_scale + self.drop_path(attention_output)
-        x = x * self.skip_scale2 + self.conv_blk(self.ln_2(x).permute(0, 3, 1, 2).contiguous()).permute(0, 2, 3, 1).contiguous()
+        # x = x * self.skip_scale2 + self.conv_blk(self.ln_2(x).permute(0, 3, 1, 2).contiguous()).permute(0, 2, 3, 1).contiguous()
+        x = x * self.skip_scale2 + self.ln_2(x).permute(0, 3, 1, 2).contiguous().permute(0, 2, 3, 1).contiguous()
 
         # Reshape back to original dimensions
         output = x.view(B, -1, C).contiguous()
@@ -168,12 +169,12 @@ class DenseGSSD(nn.Module):
         self.dim = dim
 
         # Creating multiple VSSBlocks
-        self.gssdb1 = GSSDBlock(hidden_dim=dim, drop_path=drop_path, norm_layer=nn.LayerNorm)
-        self.gssdb2 = GSSDBlock(hidden_dim=dim, drop_path=drop_path, norm_layer=nn.LayerNorm)
-        self.gssdb3 = GSSDBlock(hidden_dim=dim, drop_path=drop_path, norm_layer=nn.LayerNorm)
-        self.gssdb4 = GSSDBlock(hidden_dim=dim, drop_path=drop_path, norm_layer=nn.LayerNorm)
-        self.gssdb5 = GSSDBlock(hidden_dim=dim, drop_path=drop_path, norm_layer=nn.LayerNorm)
-        self.gssdb6 = GSSDBlock(hidden_dim=dim, drop_path=drop_path, norm_layer=nn.LayerNorm)
+        self.gssdb1 = GSSDBlock(hidden_dim=dim, drop_path=drop_path)
+        self.gssdb2 = GSSDBlock(hidden_dim=dim, drop_path=drop_path)
+        self.gssdb3 = GSSDBlock(hidden_dim=dim, drop_path=drop_path)
+        self.gssdb4 = GSSDBlock(hidden_dim=dim, drop_path=drop_path)
+        self.gssdb5 = GSSDBlock(hidden_dim=dim, drop_path=drop_path)
+        self.gssdb6 = GSSDBlock(hidden_dim=dim, drop_path=drop_path)
 
         # Conditional creation of convolutional layer
         if resi_connection == '1conv':
@@ -205,17 +206,17 @@ class DenseGSSD(nn.Module):
         y3 = self.gssdb2(y2)
         y3 = y3 + y2 + y1 + x
 
-        y4 = self.gssdb3(y3)
-        y4 = y4 + y3 + y2 + y1 + x
-
-        y5 = self.gssdb3(y4)
-        y5 = y5 + y4 + y3 + y2 + y1 + x
-
-        y6 = self.gssdb3(y5)
-        y6 = y6 + y5 + y4 + y3 + y2 + y1 + x
+        # y4 = self.gssdb3(y3)
+        # y4 = y4 + y3 + y2 + y1 + x
+        #
+        # y5 = self.gssdb3(y4)
+        # y5 = y5 + y4 + y3 + y2 + y1 + x
+        #
+        # y6 = self.gssdb3(y5)
+        # y6 = y6 + y5 + y4 + y3 + y2 + y1 + x
 
         # Unembed, convolve, and embed
-        y = self.patch_unembed(y6)
+        y = self.patch_unembed(y3)
         y = self.conv(y)
         y = self.patch_embed(y)
 
@@ -349,7 +350,7 @@ class WMamba(nn.Module):
                  img_size: int = 64,
                  patch_size: int = 1,
                  in_chans: int = 3,
-                 embed_dim: int = 180,
+                 embed_dim: int = 128,
                  drop_rate: float = 0.,
                  norm_layer=nn.LayerNorm,
                  patch_norm: bool = True,
@@ -397,7 +398,7 @@ class WMamba(nn.Module):
         self.ca3 = CABlock(num_feat=embed_dim)
         self.ca4 = CABlock(num_feat=embed_dim)
 
-        self.norm = norm_layer(self.num_features)
+        # self.norm = norm_layer(self.num_features)
 
         if resi_connection == '1conv':
             self.conv_after_body = nn.Conv2d(embed_dim, embed_dim, kernel_size=3, stride=1, padding=1)
@@ -445,169 +446,19 @@ class WMamba(nn.Module):
         """
         x_scale = 1.2
 
-        # Multi Input
         x_first = self.sfem(x)
         x = self.patch_embed(x_first)
         x = self.pos_drop(x)
-        # x = self.norm(x)
 
-        # like RRDB
         y1 = self.dgssd1(x) * x_scale + self.ca1(x)
         y2 = self.dgssd2(y1) * x_scale + self.ca2(y1)
-        y3 = self.dgssd3(y2) * x_scale + self.ca3(y2)
-        y4 = self.dgssd4(y3) * x_scale + self.ca4(y3)
+        # y3 = self.dgssd3(y2) * x_scale + self.ca3(y2)
+        # y4 = self.dgssd4(y3) * x_scale + self.ca4(y3)
 
         # Residual
-        y5 = y4 * x_scale + self.ca5(x)
+        y5 = y2 * x_scale + self.ca5(x)
 
-        y = self.norm(y5)
-        y = self.patch_unembed(y)
-        y = self.conv_after_body(y)
-        y = x_first + y
-        y = self.conv_last(y)
-
-        return y
-
-
-class MWMamba(nn.Module):
-    """
-    A model for image restoration that combines shallow and deep feature extraction,
-    along with channel attention mechanisms.
-
-    Args:
-        img_size (int): The height and width of the input image.
-        patch_size (int): The size of the patches used in feature extraction.
-        in_chans (int): The number of input channels.
-        in_chans1 (int): The number of input channels for secondary input.
-        embed_dim (int): The embedding dimension for feature maps.
-        drop_rate (float): The dropout rate.
-        norm_layer: The normalization layer to use.
-        patch_norm (bool): Whether to apply normalization on patches.
-        resi_connection (str): Type of residual connection ('1conv' or '3conv').
-    """
-
-    def __init__(self,
-                 img_size: int = 64,
-                 patch_size: int = 1,
-                 in_chans: int = 3,
-                 in_chans1: int = 7,
-                 embed_dim: int = 180,
-                 drop_rate: float = 0.,
-                 norm_layer=nn.LayerNorm,
-                 patch_norm: bool = True,
-                 resi_connection: str = '1conv',
-                 **kwargs):
-        super(MWMamba, self).__init__()
-
-        num_in_ch = in_chans
-        num_out_ch = in_chans
-
-        # Shallow feature extraction
-        self.sfem = SFEModule(num_in_ch, embed_dim)
-        self.weights = nn.Parameter(torch.tensor([1.0, 1.0]), requires_grad=True)
-        self.mmifem = MMIFEModule(dim=embed_dim, num_para=in_chans1)
-
-        # Deep feature extraction
-        self.embed_dim = embed_dim
-        self.patch_norm = patch_norm
-        self.num_features = embed_dim
-
-        self.patch_embed = PatchEmbed(
-            img_size=img_size,
-            patch_size=patch_size,
-            in_chans=embed_dim,
-            embed_dim=embed_dim,
-            norm_layer=norm_layer if self.patch_norm else None)
-
-        self.patch_unembed = PatchUnEmbed(
-            img_size=img_size,
-            patch_size=patch_size,
-            in_chans=embed_dim,
-            embed_dim=embed_dim,
-            )
-
-        self.pos_drop = nn.Dropout(p=drop_rate)
-
-        # DenseGSSD Modules
-        self.dgssd1 = DenseGSSD(dim=embed_dim)
-        self.dgssd2 = DenseGSSD(dim=embed_dim)
-        self.dgssd3 = DenseGSSD(dim=embed_dim)
-        self.dgssd4 = DenseGSSD(dim=embed_dim)
-
-        # Channel Attention Modules
-        self.ca5 = CABlock(num_feat=embed_dim)
-        self.ca1 = CABlock(num_feat=embed_dim)
-        self.ca2 = CABlock(num_feat=embed_dim)
-        self.ca3 = CABlock(num_feat=embed_dim)
-        self.ca4 = CABlock(num_feat=embed_dim)
-
-        self.norm = norm_layer(self.num_features)
-
-        if resi_connection == '1conv':
-            self.conv_after_body = nn.Conv2d(embed_dim, embed_dim, kernel_size=3, stride=1, padding=1)
-        elif resi_connection == '3conv':
-            self.conv_after_body = nn.Sequential(
-                nn.Conv2d(embed_dim, embed_dim // 4, kernel_size=3, stride=1, padding=1),
-                nn.LeakyReLU(negative_slope=0.2, inplace=True),
-                nn.Conv2d(embed_dim // 4, embed_dim // 4, kernel_size=1, stride=1, padding=0),
-                nn.LeakyReLU(negative_slope=0.2, inplace=True),
-                nn.Conv2d(embed_dim // 4, embed_dim, kernel_size=3, stride=1, padding=1)
-            )
-
-        # Restoration module
-        self.conv_last = nn.Conv2d(embed_dim, num_out_ch, kernel_size=3, stride=1, padding=1)
-
-        self.apply(self._init_weights)
-
-    def _init_weights(self, m):
-        if isinstance(m, nn.Linear):
-            trunc_normal_(m.weight, std=.02)
-            if isinstance(m, nn.Linear) and m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-        elif isinstance(m, nn.LayerNorm):
-            nn.init.constant_(m.bias, 0)
-            nn.init.constant_(m.weight, 1.0)
-
-    @torch.jit.ignore
-    def no_weight_decay(self):
-        return {'absolute_pos_embed'}
-
-    @torch.jit.ignore
-    def no_weight_decay_keywords(self):
-        return {'relative_position_bias_table'}
-
-    def forward(self, x, x1):
-        """
-        Forward pass for the MWMamba layer.
-
-        Args:
-            x (torch.Tensor): Input tensor of shape (N, C, H, W).
-            x1 (torch.Tensor): Secondary input tensor of shape (N, in_chans1, H, W).
-
-        Returns:
-           torch.Tensor: Output tensor after processing.
-        """
-        x_scale = 1.2
-
-        # Multi Input
-        x_first = self.sfem(x)
-        x_second = self.mmifem(x1)
-        x = self.weights[0] * x_first + self.weights[1] * x_second
-        x = self.patch_embed(x)
-        x = self.pos_drop(x)
-        x = self.norm(x)
-
-        # like RRDB
-        y1 = self.dgssd1(x) * x_scale + self.ca1(x)
-        y2 = self.dgssd2(y1) * x_scale + self.ca2(y1)
-        y3 = self.dgssd3(y2) * x_scale + self.ca3(y2)
-        y4 = self.dgssd4(y3) * x_scale + self.ca4(y3)
-
-        # Residual
-        y5 = y4 * x_scale + self.ca5(x)
-
-        y = self.norm(y5)
-        y = self.patch_unembed(y)
+        y = self.patch_unembed(y5)
         y = self.conv_after_body(y)
         y = x_first + y
         y = self.conv_last(y)
@@ -671,25 +522,3 @@ class PatchUnEmbed(nn.Module):
     def flops(self):
         flops = 0
         return flops
-
-
-# model = WMamba(img_size=32,
-#                 patch_size=1,
-#                 in_chans=1,
-#                 embed_dim=256,
-#                 drop_rate=0.,
-#                 norm_layer=nn.LayerNorm,
-#                 patch_norm=True,
-#                 use_checkpoint=False,
-#                 resi_connection='3conv').to(device)
-
-# model = MWMamba(img_size=32,
-#                 patch_size=1,
-#                 in_chans=1,
-#                 in_chans1=num_c,
-#                 embed_dim=256,
-#                 drop_rate=0.,
-#                 norm_layer=nn.LayerNorm,
-#                 patch_norm=True,
-#                 use_checkpoint=False,
-#                 resi_connection='3conv').to(device)
